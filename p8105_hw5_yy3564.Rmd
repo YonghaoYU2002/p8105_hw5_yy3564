@@ -6,6 +6,158 @@ output: github_document
 ---
 
 ```{r setup, include=FALSE}
+library(tidyverse)
+library(broom)
+library(purrr)
+```
+# Problem 2
 
+### Set the parameters
+```{r}
+n = 30
+sigma = 5
+alpha = 0.05
+num_simulations = 5000
+mu_values = 1:6
 ```
 
+### Build the functions required to do the simulation for each μ
+```{r}
+simulate_power = function(mu) {
+  results = replicate(num_simulations, {
+
+    data = rnorm(n, mean = mu, sd = sigma)
+    
+    t.test(data, mu = 0) |>
+      broom::tidy() |>
+      select(estimate, p.value)
+  }, simplify = FALSE) |>
+    bind_rows() 
+  
+  power = results |>
+    filter(p.value < alpha) |>
+    nrow() / nrow(results)
+  
+  avg_estimate = results |>
+    pull(estimate) |>
+    mean()
+  
+  avg_estimate_rejected = results |>
+    filter(p.value < alpha) |>
+    pull(estimate) |>
+    mean()
+  
+  tibble(
+    mu = mu,
+    power = power,
+    avg_estimate = avg_estimate,
+    avg_estimate_rejected = avg_estimate_rejected
+  )
+}
+
+
+simulation_results = map_dfr(mu_values, simulate_power)
+```
+
+### Make a plot showing the proportion of times the null was rejected on the y axis and the true value of μ on the x axis.
+```{r}
+ggplot(simulation_results, aes(x = mu, y = power)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Power of One-Sample t-Test vs. True Mean",
+    x = "True Mean (mu)",
+    y = "Power"
+  )
+```
+
+The association between effect size and power is positive and direct: as the effect size increases, the power of the test also increases.
+
+### Make a plot showing the average estimate of μ on the y axis and the true value of μ on the x axis (red color: only in samples for which the null is rejcted)
+```{r}
+ggplot(simulation_results) +
+  geom_line(aes(x = mu, y = avg_estimate), color = "blue") +
+  geom_point(aes(x = mu, y = avg_estimate), color = "blue") +
+  geom_line(aes(x = mu, y = avg_estimate_rejected), color = "red") +
+  geom_point(aes(x = mu, y = avg_estimate_rejected), color = "red") +
+  labs(
+    title = "Average Estimates vs. True Mean",
+    x = "True Mean (mu)",
+    y = "Average Estimate"
+  ) +
+  scale_color_manual(
+    values = c("blue" = "All Samples", "red" = "Rejected Samples")
+  )
+```
+
+The sample average of the estimated mean across tests for which the null hypothesis is rejected is generally not approximately equal to the true value of the mean.
+It is because The sample average of the mean across tests that reject the null hypothesis is biased and tends to overestimate the true mean due to the inclusion of more extreme sample values.
+
+# Problem 3
+
+### Load the homicide data
+```{r}
+homicide_data = read_csv("data/homicide-data.csv")
+homicide_data
+```
+### Describe the raw data
+It is a homicide dataset covering 50 large U.S. cities. Each row represents a homicide case with details on location (city, state), victim demographics (age, race, sex), and case status (disposition), such as "Open/No arrest" or "Closed by arrest." The data includes geographic coordinates (latitude, longitude) and the date the homicide was reported. The primary focus is on calculating the proportion of unsolved homicides (disposition marked as "Open/No arrest" or "Closed without arrest"). This dataset highlights trends in homicide resolution rates and demographic disparities across U.S. cities for transparency and analysis.
+
+### Data preprocessing
+
+```{r}
+homicide_summary = homicide_data |>
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    unsolved = if_else(disposition %in% c("Closed without arrest", "Open/No arrest"), 1, 0)
+  ) |>
+  filter(city_state != "Tulsa, AL")|>
+  group_by(city_state) |>
+  summarize(
+    total_homicides = n(),
+    unsolved_homicides = sum(unsolved),
+    .groups = "drop"
+  ) 
+```
+
+### For the city of Baltimore, MD, estimate the proportion of homicides that are unsolved
+```{r}
+baltimore_data = homicide_summary |>
+  filter(city_state == "Baltimore, MD")
+
+baltimore_test = prop.test(baltimore_data$unsolved_homicides, baltimore_data$total_homicides) |>
+  broom::tidy()
+
+baltimore_results = baltimore_test |>
+  select(estimate, conf.low, conf.high)
+
+baltimore_results
+```
+
+### Now run prop.test for each of the cities in my dataset
+```{r}
+city_proportion_estimates = homicide_summary |>
+  mutate(
+    test_results = map2(unsolved_homicides, total_homicides, ~ prop.test(.x, .y) |> tidy())
+  ) |>
+  unnest(test_results) |>
+  select(city_state, estimate, conf.low, conf.high) |>
+  arrange(desc(estimate))
+city_proportion_estimates
+```
+
+### Create a plot that shows the estimates and CIs for each city
+```{r}
+city_proportion_estimates|>
+  ggplot(aes(x = reorder(city_state, estimate), y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  labs(
+    title = "Proportion of Unsolved Homicides by City",
+    x = "City",
+    y = "Proportion of Unsolved Homicides"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+```
